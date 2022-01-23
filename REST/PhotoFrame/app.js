@@ -31,8 +31,13 @@ import winston from 'winston';
 import {config} from './config.js';
 import {auth} from './auth.js';
 
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
 // The path to the folder this file is located in.
-const dirname = path.dirname(new URL(import.meta.url).pathname);
+const __filename = fileURLToPath(import.meta.url);
+const dirname1 = dirname(__filename);
+//path.posix.dirname(new URL(import.meta.url).pathname);
 
 const app = express();
 const fileStore = sessionFileStore(session);
@@ -113,6 +118,7 @@ const logger = winston.createLogger({
 });
 
 // Enable extensive logging if the DEBUG environment variable is set.
+//process.env.DEBUG = "*";
 if (process.env.DEBUG) {
   // Print all winston log levels.
   logger.level = 'silly';
@@ -132,11 +138,11 @@ if (process.env.DEBUG) {
 
 
 // Set up static routes for hosted libraries.
-app.use(express.static('static'));
+app.use('/',express.static('static'));
 app.use('/js',
   express.static(
-    path.join(
-      dirname,
+    path.posix.join(
+      dirname1,
       '/node_modules/jquery/dist/'),
   )
 );
@@ -144,19 +150,24 @@ app.use('/js',
 app.use(
   '/fancybox',
   express.static(
-    path.join(
-      dirname,
+    path.posix.join(
+      dirname1,
       '/node_modules/@fancyapps/fancybox/dist/'),
   )
 );
 app.use(
   '/mdlite',
   express.static(
-    path.join(
-      dirname,
+    path.posix.join(
+      dirname1,
       '/node_modules/material-design-lite/dist/'),
   )
 );
+
+console.log("Started !");
+console.log(`dirname: ${dirname1}`);
+const ugur = path.posix.join(dirname1,'/node_modules/jquery/dist/');
+console.log(`js path: ${ugur}`);
 
 
 // Parse application/json request data.
@@ -352,6 +363,27 @@ app.get('/getAlbums', async (req, res) => {
       res.status(200).send(data);
       albumCache.setItem(userId, data);
     }
+  }
+});
+
+// Returns all albums owned by the user.
+app.get('/getMedias', async (req, res) => {
+  logger.info('Loading medias');
+  const userId = req.user.profile.id;
+
+  logger.verbose('Loading medias from API.');
+  // Albums not in cache, retrieve the albums from the Library API
+  // and return them
+  const data = await libraryApiGetMedias(req.user.token);
+  if (data.error) {
+    // Error occured during the request. Albums could not be loaded.
+    returnError(res, data);
+  } else {
+    // Albums were successfully loaded from the API. Cache them
+    // temporarily to speed up the next request and return them.
+    // The cache implementation automatically clears the data when the TTL is
+    // reached.
+    res.status(200).send(data);
   }
 });
 
@@ -555,10 +587,12 @@ async function libraryApiGetAlbums(authToken) {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ' + authToken
         },
-      });
+      }).then(response =>{  
+        //console.log(response);        
+        return response;
+      });   
 
-      const result = await checkStatus(albumResponse);
-
+      const result = await checkStatus(albumResponse);      
       logger.debug(`Response: ${result}`);
 
       if (result && result.albums) {
@@ -586,6 +620,67 @@ async function libraryApiGetAlbums(authToken) {
 
   logger.info('Albums loaded.');
   return {albums, error};
+}
+
+// Returns a list of all media owner by the logged in user from the Library
+// API.
+async function libraryApiGetMedias(authToken) {
+  let medias = [];
+  let nextPageToken = null;
+  let error = null;
+
+  let parameters = new URLSearchParams();
+  parameters.append('pageSize', config.albumPageSize);
+
+  let _page_number = 0;
+
+  try {
+    // Loop while there is a nextpageToken property in the response until all
+    // albums have been listed.
+    do {
+      logger.verbose(`Loading medias. Received so far: ${medias.length}`);
+      // Make a GET request to load the albums with optional parameters (the
+      // pageToken if set).
+      const albumResponse = await fetch(config.apiEndpoint + '/v1/mediaItems?' + parameters, {
+        method: 'get',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + authToken
+        },
+      }).then(response =>{  
+        //console.log(response);        
+        return response;
+      });   
+
+      const result = await checkStatus(albumResponse);      
+      logger.debug(`Response: ${result}`);
+
+      if (result && result.mediaItems) {
+        logger.verbose(`Number of media items received: ${result.mediaItems.length}`);
+        // Parse albums and add them to the list, skipping empty entries.
+        const items = result.mediaItems.filter(x => !!x);
+
+        medias = medias.concat(items);
+      }
+    if(result.nextPageToken){
+      parameters.set('pageToken', result.nextPageToken);
+    }else{
+      parameters.delete('pageToken');
+    }
+      
+      // Loop until all albums have been listed and no new nextPageToken is
+      // returned.
+    //} while (parameters.has('pageToken'));
+    } while (_page_number++ < 2);
+
+  } catch (err) {
+    // Log the error and prepare to return it.
+    error = err;
+    logger.error(error);
+  }
+
+  logger.info('Medias loaded.');
+  return {medias: medias, error};
 }
 
 // Return the body as JSON if the request was successful, or thrown a StatusError.
